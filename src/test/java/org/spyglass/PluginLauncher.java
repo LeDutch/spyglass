@@ -1,4 +1,4 @@
-package com.example;
+package org.spyglass;
 
 import net.runelite.client.RuneLite;
 import net.runelite.client.externalplugins.ExternalPluginManager;
