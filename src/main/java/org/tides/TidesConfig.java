@@ -3,48 +3,56 @@ package org.tides;
 import net.runelite.client.config.Config;
 import net.runelite.client.config.ConfigGroup;
 import net.runelite.client.config.ConfigItem;
-import net.runelite.client.config.Keybind;
 import net.runelite.client.config.Range;
 
 @ConfigGroup("tides")
 public interface TidesConfig extends Config
 {
 	@ConfigItem(
-		keyName = "toggleKey",
-		name = "Toggle key",
-		description = "Keybind to toggle the water mesh"
+		keyName = "bridge117Hd",
+		name = "Bridge 117HD",
+		description = "Install the tides renderer bridge when 117HD is active"
 	)
-	default Keybind toggleKey()
+	default boolean bridge117Hd()
 	{
-		return Keybind.NOT_SET;
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "hotPatch117HdShaders",
+		name = "Hot-patch 117HD shaders",
+		description = "Reflect into 117HD and redirect its shader/resource path to patched tides copies"
+	)
+	default boolean hotPatch117HdShaders()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "inject117HdWaterState",
+		name = "Inject 117HD water state",
+		description = "Reflect into the active 117HD renderer and mark tides water tiles in the live scene context"
+	)
+	default boolean inject117HdWaterState()
+	{
+		return true;
 	}
 
 	@ConfigItem(
 		keyName = "debugOverlay",
 		name = "Debug overlay",
-		description = "Show hovered tile texture debug information"
+		description = "Draw detected water tiles and shoreline edges"
 	)
 	default boolean debugOverlay()
 	{
-		return true;
-	}
-
-	@Range(min = 1, max = 32)
-	@ConfigItem(
-		keyName = "subdivisions",
-		name = "Subdivisions",
-		description = "Sub-tile subdivisions per tile"
-	)
-	default int subdivisions()
-	{
-		return 4;
+		return false;
 	}
 
 	@Range(min = 0, max = 96)
 	@ConfigItem(
 		keyName = "amplitude",
 		name = "Amplitude",
-		description = "Wave height in local units"
+		description = "Wave height in local units for renderer integration"
 	)
 	default int amplitude()
 	{
@@ -66,31 +74,20 @@ public interface TidesConfig extends Config
 	@ConfigItem(
 		keyName = "speed",
 		name = "Speed",
-		description = "Wave speed"
+		description = "Wave phase speed"
 	)
 	default int speed()
 	{
 		return 55;
 	}
 
-	@Range(min = 0, max = 100)
 	@ConfigItem(
-		keyName = "opacity",
-		name = "Opacity",
-		description = "Mesh opacity"
+		keyName = "shorelineFade",
+		name = "Shoreline fade",
+		description = "Dampen wave height near non-water neighbors"
 	)
-	default int opacity()
+	default boolean shorelineFade()
 	{
-		return 60;
-	}
-
-	@ConfigItem(
-		keyName = "wireframe",
-		name = "Wireframe",
-		description = "Draw cell edges to inspect the generated mesh"
-	)
-	default boolean wireframe()
-	{
-		return false;
+		return true;
 	}
 }

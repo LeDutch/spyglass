@@ -70,4 +70,5 @@ tasks.register('runClient', JavaExec) {
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'org.tides.PluginLauncher'
 	jvmArgs '-ea'
+	systemProperty 'logback.configurationFile', file('logback-debug.xml').absolutePath
 }
