@@ -1,4 +1,4 @@
-package org.tides;
+package org.tides.water;
 
 import java.awt.Color;
 

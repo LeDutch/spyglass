@@ -1,4 +1,4 @@
-package org.tides;
+package org.tides.hd;
 
 import net.runelite.client.plugins.Plugin;
 

@@ -1,0 +1,45 @@
+#version 430
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(rgba32f, binding = 0) readonly uniform image2D initialSpectrum;
+layout(rg32f, binding = 1) writeonly uniform image2D spectrum;
+
+uniform int uResolution;
+uniform float uDomain;
+uniform float uTime;
+uniform float uGravity;
+uniform float uDepth;
+
+const float PI = 3.14159265358979323846;
+
+vec2 complexMul(vec2 a, vec2 b)
+{
+	return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+void main()
+{
+	ivec2 id = ivec2(gl_GlobalInvocationID.xy);
+	if (id.x >= uResolution || id.y >= uResolution)
+	{
+		return;
+	}
+
+	float halfN = float(uResolution) * 0.5;
+	vec2 k = (vec2(id) - halfN) * (2.0 * PI / uDomain);
+	float kLength = length(k);
+	if (kLength < 1e-6)
+	{
+		imageStore(spectrum, id, vec4(0.0));
+		return;
+	}
+
+	vec4 initial = imageLoad(initialSpectrum, id);
+	vec2 h0 = initial.rg;
+	vec2 h0conj = initial.ba;
+	float dispersion = sqrt(uGravity * kLength * tanh(min(kLength * uDepth, 20.0))) * uTime;
+	vec2 phase = vec2(cos(dispersion), sin(dispersion));
+	vec2 h = complexMul(h0, phase) + complexMul(h0conj, vec2(phase.x, -phase.y));
+	imageStore(spectrum, id, vec4(h, 0.0, 0.0));
+}

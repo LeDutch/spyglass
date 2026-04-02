@@ -1,0 +1,112 @@
+#version 430
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(rg32f, binding = 0) readonly uniform image2D spectrum;
+layout(rgba16f, binding = 1) uniform image2D displacementMap;
+layout(rg16f, binding = 2) writeonly uniform image2D slopeMap;
+
+uniform int uResolution;
+uniform float uDomain;
+uniform float uHeightScale;
+uniform float uChoppyLambda;
+
+const float FOAM_BIAS = 0.975;
+const float FOAM_THRESHOLD = 0.012;
+const float FOAM_GAIN = 7.2;
+const float FOAM_ADD = 1.70;
+const float FOAM_DECAY_RATE = 0.22;
+const float FOAM_CREST_MIN = 8.0;
+const float FOAM_CREST_MAX = 30.0;
+const float FOAM_POINTY_MIN = 0.12;
+const float FOAM_POINTY_MAX = 0.48;
+
+float sampleHeightRaw(ivec2 coord)
+{
+	ivec2 wrapped = ivec2(
+		(coord.x + uResolution) % uResolution,
+		(coord.y + uResolution) % uResolution
+	);
+	vec2 h = imageLoad(spectrum, wrapped).rg;
+	float signFlip = ((wrapped.x + wrapped.y) & 1) == 0 ? 1.0 : -1.0;
+	float normalization = float(uResolution * uResolution);
+	return h.x * signFlip / normalization;
+}
+
+float sampleHeightAt(ivec2 coord)
+{
+	return sampleHeightRaw(coord) * uHeightScale;
+}
+
+vec2 computeChoppy(
+	float center,
+	float left,
+	float right,
+	float down,
+	float up,
+	float cellSize
+)
+{
+	vec2 slope = vec2((right - left) / (2.0 * cellSize), (up - down) / (2.0 * cellSize));
+	vec2 secondDerivative = vec2(
+		(right - (2.0 * center) + left) / (cellSize * cellSize),
+		(up - (2.0 * center) + down) / (cellSize * cellSize)
+	);
+	vec2 choppy = -slope * (cellSize * uChoppyLambda);
+	choppy /= 1.0 + abs(secondDerivative) * 0.85;
+	return choppy;
+}
+
+void main()
+{
+	ivec2 id = ivec2(gl_GlobalInvocationID.xy);
+	if (id.x >= uResolution || id.y >= uResolution)
+	{
+		return;
+	}
+
+	float cellSize = uDomain / float(uResolution);
+	float center = sampleHeightAt(id);
+	float left = sampleHeightAt(id + ivec2(-1, 0));
+	float right = sampleHeightAt(id + ivec2(1, 0));
+	float down = sampleHeightAt(id + ivec2(0, -1));
+	float up = sampleHeightAt(id + ivec2(0, 1));
+	float farLeft = sampleHeightAt(id + ivec2(-2, 0));
+	float farRight = sampleHeightAt(id + ivec2(2, 0));
+	float farDown = sampleHeightAt(id + ivec2(0, -2));
+	float farUp = sampleHeightAt(id + ivec2(0, 2));
+	float downLeft = sampleHeightAt(id + ivec2(-1, -1));
+	float downRight = sampleHeightAt(id + ivec2(1, -1));
+	float upLeft = sampleHeightAt(id + ivec2(-1, 1));
+	float upRight = sampleHeightAt(id + ivec2(1, 1));
+
+	float smoothedHeight = center * 0.35
+		+ (left + right + down + up) * 0.10
+		+ (downLeft + downRight + upLeft + upRight) * 0.0625;
+
+	vec2 slope = vec2((right - left) / (2.0 * cellSize), (up - down) / (2.0 * cellSize));
+	vec2 choppy = computeChoppy(center, left, right, down, up, cellSize);
+	vec2 choppyLeft = computeChoppy(left, farLeft, center, downLeft, upLeft, cellSize);
+	vec2 choppyRight = computeChoppy(right, center, farRight, downRight, upRight, cellSize);
+	vec2 choppyDown = computeChoppy(down, downLeft, downRight, farDown, center, cellSize);
+	vec2 choppyUp = computeChoppy(up, upLeft, upRight, center, farUp, cellSize);
+
+	float dDx_dx = (choppyRight.x - choppyLeft.x) / (2.0 * cellSize);
+	float dDz_dz = (choppyUp.y - choppyDown.y) / (2.0 * cellSize);
+	float dDx_dz = (choppyUp.x - choppyDown.x) / (2.0 * cellSize);
+	float dDz_dx = (choppyRight.y - choppyLeft.y) / (2.0 * cellSize);
+	float jacobian = (1.0 + dDx_dx) * (1.0 + dDz_dz) - dDx_dz * dDz_dx;
+	float biasedJacobian = max(0.0, FOAM_BIAS - jacobian);
+	float slopeMagnitude = length(slope);
+	float choppyMagnitude = length(choppy);
+	float crestHeight = max(abs(smoothedHeight), choppyMagnitude * 0.92);
+	float crestMask = smoothstep(FOAM_CREST_MIN, FOAM_CREST_MAX, crestHeight);
+	float pointyMask = smoothstep(FOAM_POINTY_MIN, FOAM_POINTY_MAX, choppyMagnitude + slopeMagnitude * cellSize * 0.35);
+	float previousFoam = imageLoad(displacementMap, id).a;
+	previousFoam *= exp(-FOAM_DECAY_RATE);
+	float foamInput = max(0.0, biasedJacobian - FOAM_THRESHOLD) * FOAM_GAIN * crestMask * pointyMask;
+	float foam = clamp(previousFoam + foamInput * FOAM_ADD, 0.0, 1.0);
+
+	imageStore(displacementMap, id, vec4(choppy.x, smoothedHeight, choppy.y, foam));
+	imageStore(slopeMap, id, vec4(slope, 0.0, 0.0));
+}

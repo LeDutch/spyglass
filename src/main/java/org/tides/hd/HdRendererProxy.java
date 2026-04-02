@@ -1,4 +1,4 @@
-package org.tides;
+package org.tides.hd;
 
 import java.util.Set;
 import net.runelite.api.GameObject;
@@ -12,6 +12,8 @@ import net.runelite.api.Texture;
 import net.runelite.api.TileObject;
 import net.runelite.api.WorldView;
 import net.runelite.api.hooks.DrawCallbacks;
+import org.tides.TidesPlugin;
+import org.tides.buoyancy.TidesBuoyancyController;
 
 final class HdRendererProxy implements DrawCallbacks
 {
@@ -29,7 +31,23 @@ final class HdRendererProxy implements DrawCallbacks
 	@Override
 	public void draw(Projection projection, Scene scene, Renderable renderable, int orientation, int x, int y, int z, long hash)
 	{
-		delegate.draw(projection, scene, renderable, orientation, x, y, z, hash);
+		plugin.debugSelectedBuoyancyProximity("draw", renderable, hash, x, z);
+		TidesBuoyancyController.BuoyancyTransform transform = plugin.computeRenderableBuoyancyTransform(hash, orientation, x, z);
+		if (transform == null)
+		{
+			delegate.draw(projection, scene, renderable, orientation, x, y, z, hash);
+			return;
+		}
+
+		Model model = renderable instanceof Model ? (Model) renderable : renderable.getModel();
+		if (model == null)
+		{
+			delegate.draw(projection, scene, renderable, orientation, x, y + transform.getHeaveOffset(), z, hash);
+			return;
+		}
+
+		plugin.drawBuoyantModel(model, transform, () ->
+			delegate.draw(projection, scene, renderable, orientation, x, y + transform.getHeaveOffset(), z, hash));
 	}
 
 	@Override
@@ -116,6 +134,7 @@ final class HdRendererProxy implements DrawCallbacks
 		float cameraX, float cameraY, float cameraZ, float cameraPitch, float cameraYaw,
 		int minLevel, int level, int maxLevel, Set<Integer> hideRoofIds)
 	{
+		plugin.onHdFrameStart();
 		plugin.onHdPreSceneDraw(scene);
 		bridge.onRendererFrame(plugin, "preSceneDraw");
 		delegate.preSceneDraw(scene, cameraX, cameraY, cameraZ, cameraPitch, cameraYaw, minLevel, level, maxLevel, hideRoofIds);
@@ -125,6 +144,7 @@ final class HdRendererProxy implements DrawCallbacks
 	public void postSceneDraw(Scene scene)
 	{
 		delegate.postSceneDraw(scene);
+		plugin.onHdFrameEnd();
 	}
 
 	@Override
@@ -148,19 +168,49 @@ final class HdRendererProxy implements DrawCallbacks
 	@Override
 	public void drawDynamic(Projection worldProjection, Scene scene, TileObject tileObject, Renderable r, Model m, int orient, int x, int y, int z)
 	{
-		delegate.drawDynamic(worldProjection, scene, tileObject, r, m, orient, x, y, z);
+		plugin.debugSelectedBuoyancyProximity("drawDynamic", r, tileObject == null ? -1L : tileObject.getHash(), x, z);
+		plugin.recordRenderedObject(tileObject, orient, x, y, z);
+		TidesBuoyancyController.BuoyancyTransform transform = plugin.computeBuoyancyTransform(tileObject, orient, x, z);
+		if (transform == null)
+		{
+			delegate.drawDynamic(worldProjection, scene, tileObject, r, m, orient, x, y, z);
+			return;
+		}
+
+		plugin.drawBuoyantModel(m, transform, () ->
+			delegate.drawDynamic(worldProjection, scene, tileObject, r, m, orient, x, y + transform.getHeaveOffset(), z));
 	}
 
 	@Override
 	public void drawDynamic(int renderThreadId, Projection worldProjection, Scene scene, TileObject tileObject, Renderable r, Model m, int orient, int x, int y, int z)
 	{
-		delegate.drawDynamic(renderThreadId, worldProjection, scene, tileObject, r, m, orient, x, y, z);
+		plugin.debugSelectedBuoyancyProximity("drawDynamicAsync", r, tileObject == null ? -1L : tileObject.getHash(), x, z);
+		plugin.recordRenderedObject(tileObject, orient, x, y, z);
+		TidesBuoyancyController.BuoyancyTransform transform = plugin.computeBuoyancyTransform(tileObject, orient, x, z);
+		if (transform == null)
+		{
+			delegate.drawDynamic(renderThreadId, worldProjection, scene, tileObject, r, m, orient, x, y, z);
+			return;
+		}
+
+		plugin.drawBuoyantModel(m, transform, () ->
+			delegate.drawDynamic(renderThreadId, worldProjection, scene, tileObject, r, m, orient, x, y + transform.getHeaveOffset(), z));
 	}
 
 	@Override
 	public void drawTemp(Projection worldProjection, Scene scene, GameObject gameObject, Model m, int orient, int x, int y, int z)
 	{
-		delegate.drawTemp(worldProjection, scene, gameObject, m, orient, x, y, z);
+		plugin.debugSelectedBuoyancyProximity("drawTemp", m, gameObject == null ? -1L : gameObject.getHash(), x, z);
+		plugin.recordRenderedObject(gameObject, orient, x, y, z);
+		TidesBuoyancyController.BuoyancyTransform transform = plugin.computeBuoyancyTransform(gameObject, orient, x, z);
+		if (transform == null)
+		{
+			delegate.drawTemp(worldProjection, scene, gameObject, m, orient, x, y, z);
+			return;
+		}
+
+		plugin.drawBuoyantModel(m, transform, () ->
+			delegate.drawTemp(worldProjection, scene, gameObject, m, orient, x, y + transform.getHeaveOffset(), z));
 	}
 
 	@Override

@@ -4,16 +4,18 @@ import com.google.inject.Provides;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.awt.event.KeyEvent;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
-import net.runelite.api.Perspective;
+import net.runelite.api.Model;
 import net.runelite.api.Point;
 import net.runelite.api.Scene;
 import net.runelite.api.SceneTileModel;
 import net.runelite.api.SceneTilePaint;
 import net.runelite.api.Tile;
+import net.runelite.api.TileObject;
 import net.runelite.api.WorldView;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
@@ -21,10 +23,22 @@ import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.PreMapLoad;
 import net.runelite.client.config.ConfigManager;
+import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.input.KeyListener;
+import net.runelite.client.input.KeyManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.ui.overlay.OverlayManager;
+import org.tides.buoyancy.TidesBuoyancyController;
+import org.tides.config.TidesConfig;
+import org.tides.config.TidesPreset;
+import org.tides.hd.HdRendererBridge;
+import org.tides.water.TidesSceneSnapshot;
+import org.tides.water.TidesWaterOverlay;
+import org.tides.water.TidesWaterTile;
+import org.tides.water.TidesWaterType;
+import org.tides.water.fft.TidesFftProfiles;
 
 @Slf4j
 @PluginDescriptor(
@@ -34,7 +48,7 @@ import net.runelite.client.ui.overlay.OverlayManager;
 )
 public class TidesPlugin extends Plugin
 {
-	static final int LOCAL_TILE_SIZE = 128;
+	public static final int LOCAL_TILE_SIZE = 128;
 
 	@Inject
 	private Client client;
@@ -43,10 +57,10 @@ public class TidesPlugin extends Plugin
 	private TidesConfig config;
 
 	@Inject
-	private ConfigManager configManager;
+	private OverlayManager overlayManager;
 
 	@Inject
-	private OverlayManager overlayManager;
+	private ConfigManager configManager;
 
 	@Inject
 	private TidesWaterOverlay waterOverlay;
@@ -54,25 +68,55 @@ public class TidesPlugin extends Plugin
 	@Inject
 	private HdRendererBridge hdRendererBridge;
 
-	private final TidesWaveSampler waveSampler = new TidesWaveSampler();
+	@Inject
+	private KeyManager keyManager;
+
+	@Inject
+	private TidesBuoyancyController buoyancyController;
+
 	private Scene lastScene;
 	private TidesSceneSnapshot sceneSnapshot = TidesSceneSnapshot.empty();
+	private boolean applyingPreset;
+	private final KeyListener selectionKeyListener = new KeyListener()
+	{
+		@Override
+		public void keyPressed(KeyEvent e)
+		{
+			if (config.selectBuoyantObjectHotkey().matches(e))
+			{
+				buoyancyController.requestSelectionToggle();
+				e.consume();
+			}
+		}
+
+		@Override
+		public void keyReleased(KeyEvent e)
+		{
+		}
+
+		@Override
+		public void keyTyped(KeyEvent e)
+		{
+		}
+	};
 
 	@Override
 	protected void startUp()
 	{
-		seedBridgeDefaults();
 		log.info("Tides started");
+		applyPresetIfNeeded(config.preset());
 		overlayManager.add(waterOverlay);
-		hdRendererBridge.refresh(this);
+		keyManager.registerKeyListener(selectionKeyListener);
 	}
 
 	@Override
 	protected void shutDown()
 	{
 		log.info("Tides stopped");
+		keyManager.unregisterKeyListener(selectionKeyListener);
 		hdRendererBridge.shutDown();
 		overlayManager.remove(waterOverlay);
+		buoyancyController.clearSelection();
 		clearSceneState();
 	}
 
@@ -103,6 +147,7 @@ public class TidesPlugin extends Plugin
 	@Subscribe
 	public void onClientTick(ClientTick event)
 	{
+		buoyancyController.processPendingSelection();
 		hdRendererBridge.refresh(this);
 
 		WorldView worldView = client.getTopLevelWorldView();
@@ -125,9 +170,28 @@ public class TidesPlugin extends Plugin
 		}
 	}
 
+	@Subscribe
+	public void onConfigChanged(ConfigChanged event)
+	{
+		if (!"tides".equals(event.getGroup()) || applyingPreset)
+		{
+			return;
+		}
+
+		if ("preset".equals(event.getKey()))
+		{
+			applyPresetIfNeeded(config.preset());
+		}
+	}
+
 	public TidesConfig getConfig()
 	{
 		return config;
+	}
+
+	public Client getClient()
+	{
+		return client;
 	}
 
 	public TidesSceneSnapshot getSceneSnapshot()
@@ -145,51 +209,59 @@ public class TidesPlugin extends Plugin
 		return config.debugOverlay();
 	}
 
-	public String getHdBridgeStatus()
+	public TidesBuoyancyController.RenderedObjectCandidate getSelectedRenderedObject()
 	{
-		return hdRendererBridge.getStatus();
+		return buoyancyController.getSelectedCandidate();
 	}
 
-	public String getHdShaderStatus()
+	public TidesBuoyancyController.SelectedOverlayFootprint getSelectedOverlayFootprint()
 	{
-		return hdRendererBridge.getShaderStatus();
+		return buoyancyController.getSelectedOverlayFootprint();
 	}
 
-	public String getHdSceneInjectionStatus()
+	public void onHdFrameStart()
 	{
-		return hdRendererBridge.getSceneInjectionStatus();
+		buoyancyController.beginFrame();
 	}
 
-	public boolean isHdBridgeHooked()
+	public void onHdFrameEnd()
 	{
-		return hdRendererBridge.isHooked();
+		buoyancyController.endFrame();
 	}
 
-	public int sampleWaveHeight(TidesWaterTile tile, int localX, int localZ, long nowNanos)
+	public void recordRenderedObject(TileObject tileObject, int orientation, int x, int y, int z)
 	{
-		return waveSampler.sampleHeight(tile, localX, localZ, nowNanos, config);
+		buoyancyController.recordCandidate(tileObject, orientation, x, y, z);
+	}
+
+	public TidesBuoyancyController.BuoyancyTransform computeBuoyancyTransform(TileObject tileObject, int orientation, int x, int z)
+	{
+		return buoyancyController.computeTransform(this, tileObject, orientation, x, z);
+	}
+
+	public TidesBuoyancyController.BuoyancyTransform computeRenderableBuoyancyTransform(long hash, int orientation, int x, int z)
+	{
+		return buoyancyController.computeTransformForHash(this, hash, orientation, x, z);
+	}
+
+	public void drawBuoyantModel(Model model, TidesBuoyancyController.BuoyancyTransform transform, Runnable drawAction)
+	{
+		buoyancyController.drawBuoyantModel(model, transform, drawAction);
+	}
+
+	public void debugSelectedBuoyancyProximity(String source, net.runelite.api.Renderable renderable, long hash, int x, int z)
+	{
+		buoyancyController.debugProximityToSelectedWorldView(source, renderable, hash, x, z);
 	}
 
 	public LocalPoint worldToLocal(WorldPoint worldPoint)
 	{
 		WorldView worldView = client.getTopLevelWorldView();
-		if (worldView == null || worldPoint.getPlane() != worldView.getPlane())
+		if (worldView == null)
 		{
 			return null;
 		}
-
-		int sceneX = worldPoint.getX() - worldView.getBaseX();
-		int sceneY = worldPoint.getY() - worldView.getBaseY();
-		if (sceneX < 0 || sceneY < 0 || sceneX >= worldView.getSizeX() || sceneY >= worldView.getSizeY())
-		{
-			return null;
-		}
-
-		return new LocalPoint(
-			(sceneX * LOCAL_TILE_SIZE) + Perspective.LOCAL_HALF_TILE_SIZE,
-			(sceneY * LOCAL_TILE_SIZE) + Perspective.LOCAL_HALF_TILE_SIZE,
-			worldView.getId()
-		);
+		return LocalPoint.fromWorld(worldView, worldPoint);
 	}
 
 	@Provides
@@ -198,44 +270,41 @@ public class TidesPlugin extends Plugin
 		return configManager.getConfig(TidesConfig.class);
 	}
 
+	private void applyPresetIfNeeded(TidesPreset preset)
+	{
+		if (preset == TidesPreset.CUSTOM)
+		{
+			return;
+		}
+
+		applyingPreset = true;
+		try
+		{
+			TidesFftProfiles.applyPresetToConfig(preset, configManager);
+		}
+		finally
+		{
+			applyingPreset = false;
+		}
+	}
+
 	private void clearSceneState()
 	{
 		lastScene = null;
 		sceneSnapshot = TidesSceneSnapshot.empty();
 	}
 
-	private void seedBridgeDefaults()
-	{
-		seedBooleanConfig("bridge117Hd", true);
-		seedBooleanConfig("hotPatch117HdShaders", true);
-		seedBooleanConfig("inject117HdWaterState", true);
-	}
-
-	private void seedBooleanConfig(String key, boolean value)
-	{
-		if (configManager.getConfiguration("tides", key) == null)
-		{
-			configManager.setConfiguration("tides", key, value);
-		}
-	}
-
 	private void updateSceneSnapshot(WorldView worldView, Scene scene)
 	{
 		sceneSnapshot = scanScene(worldView, scene);
 		lastScene = scene;
-		log.debug(
-			"Water snapshot updated: worldViewId={} plane={} tiles={}",
-			sceneSnapshot.getWorldViewId(),
-			sceneSnapshot.getPlane(),
-			sceneSnapshot.size()
-		);
 	}
 
 	private TidesSceneSnapshot scanScene(WorldView worldView, Scene scene)
 	{
 		Tile[][][] tiles = scene.getTiles();
 		int plane = worldView.getPlane();
-		if (tiles == null || plane < 0 || plane >= tiles.length)
+		if (tiles == null || worldView.getId() < 0 || plane < 0 || plane >= tiles.length || worldView.getSizeX() <= 0 || worldView.getSizeY() <= 0)
 		{
 			return TidesSceneSnapshot.empty();
 		}
@@ -352,7 +421,7 @@ public class TidesPlugin extends Plugin
 		);
 	}
 
-	static long tileKey(WorldPoint worldPoint)
+	public static long tileKey(WorldPoint worldPoint)
 	{
 		long x = worldPoint.getX() & 0x3FFFFFFL;
 		long y = worldPoint.getY() & 0x3FFFFFFL;
@@ -360,7 +429,7 @@ public class TidesPlugin extends Plugin
 		return x | (y << 26) | (plane << 52);
 	}
 
-	void onHdPreSceneDraw(Scene scene)
+	public void onHdPreSceneDraw(Scene scene)
 	{
 		WorldView worldView = client.getTopLevelWorldView();
 		if (worldView == null || scene == null || scene == lastScene && sceneSnapshot.matches(worldView))
@@ -371,13 +440,13 @@ public class TidesPlugin extends Plugin
 		updateSceneSnapshot(worldView, scene);
 	}
 
-	static final class WaterTileSeed
+	public static final class WaterTileSeed
 	{
-		final WorldPoint worldPoint;
-		final TidesWaterType waterType;
-		final int surfaceHeight;
-		final boolean paintBacked;
-		final boolean modelBacked;
+		private final WorldPoint worldPoint;
+		private final TidesWaterType waterType;
+		private final int surfaceHeight;
+		private final boolean paintBacked;
+		private final boolean modelBacked;
 
 		private WaterTileSeed(
 			WorldPoint worldPoint,
@@ -392,6 +461,31 @@ public class TidesPlugin extends Plugin
 			this.surfaceHeight = surfaceHeight;
 			this.paintBacked = paintBacked;
 			this.modelBacked = modelBacked;
+		}
+
+		public WorldPoint getWorldPoint()
+		{
+			return worldPoint;
+		}
+
+		public TidesWaterType getWaterType()
+		{
+			return waterType;
+		}
+
+		public int getSurfaceHeight()
+		{
+			return surfaceHeight;
+		}
+
+		public boolean isPaintBacked()
+		{
+			return paintBacked;
+		}
+
+		public boolean isModelBacked()
+		{
+			return modelBacked;
 		}
 	}
 }

@@ -5,6 +5,9 @@
     </encoder>
   </appender>
 
+  <logger name="rs117.hd.renderer.zone.SceneManager" level="INFO" />
+  <logger name="org.tides.TidesPlugin" level="INFO" />
+
   <root level="DEBUG">
     <appender-ref ref="STDOUT" />
   </root>

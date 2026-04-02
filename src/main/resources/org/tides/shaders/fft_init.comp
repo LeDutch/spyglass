@@ -1,0 +1,162 @@
+#version 430
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(rgba32f, binding = 0) uniform image2D initialSpectrum;
+
+struct SpectrumParameters
+{
+	float scale;
+	float angle;
+	float spreadBlend;
+	float swell;
+	float alpha;
+	float peakOmega;
+	float gamma;
+	float shortWavesFade;
+};
+
+layout(std430, binding = 3) readonly buffer SpectrumBuffer
+{
+	SpectrumParameters uSpectrums[];
+};
+
+uniform int uResolution;
+uniform float uDomain;
+uniform float uGravity;
+uniform float uDepth;
+uniform int uSeed;
+uniform int uBandIndex;
+
+const float PI = 3.14159265358979323846;
+
+uint hashUint(uint x)
+{
+	x += uint(uSeed) * 374761393u;
+	x = (x ^ (x >> 13u)) * 1274126177u;
+	return x ^ (x >> 16u);
+}
+
+float hashFloat(uvec2 coord, uint lane)
+{
+	uint h = hashUint(coord.x * 73856093u ^ coord.y * 19349663u ^ lane * 83492791u);
+	return max(float(h & 0x00FFFFFFu) / float(0x01000000u), 1e-6);
+}
+
+vec2 gaussianPair(uvec2 coord)
+{
+	float u1 = hashFloat(coord, 0u);
+	float u2 = hashFloat(coord, 1u);
+	float radius = sqrt(-2.0 * log(u1));
+	float angle = 2.0 * PI * u2;
+	return vec2(radius * cos(angle), radius * sin(angle));
+}
+
+float dispersion(float kLength)
+{
+	return sqrt(uGravity * kLength * tanh(min(kLength * uDepth, 20.0)));
+}
+
+float dispersionDerivative(float kLength)
+{
+	float th = tanh(min(kLength * uDepth, 20.0));
+	float ch = cosh(kLength * uDepth);
+	return uGravity * (uDepth * kLength / (ch * ch) + th) / max(dispersion(kLength), 1e-4) * 0.5;
+}
+
+float normalizationFactor(float s)
+{
+	float s2 = s * s;
+	float s3 = s2 * s;
+	float s4 = s3 * s;
+	if (s < 5.0)
+		return -0.000564 * s4 + 0.00776 * s3 - 0.044 * s2 + 0.192 * s + 0.163;
+	return -4.80e-08 * s4 + 1.07e-05 * s3 - 9.53e-04 * s2 + 5.90e-02 * s + 3.93e-01;
+}
+
+float cosine2s(float theta, float s)
+{
+	return normalizationFactor(s) * pow(abs(cos(0.5 * theta)), 2.0 * s);
+}
+
+float spreadPower(float omega, float peakOmega)
+{
+	if (omega > peakOmega)
+		return 9.77 * pow(abs(omega / peakOmega), -2.5);
+	return 6.97 * pow(abs(omega / peakOmega), 5.0);
+}
+
+float directionSpectrum(float theta, float omega, SpectrumParameters spectrum)
+{
+	float s = spreadPower(omega, spectrum.peakOmega) + 16.0 * tanh(min(omega / spectrum.peakOmega, 20.0)) * spectrum.swell * spectrum.swell;
+	float cosineSpread = cosine2s(theta - spectrum.angle, s);
+	float baseSpread = 2.0 / PI * cos(theta) * cos(theta);
+	return mix(baseSpread, cosineSpread, spectrum.spreadBlend);
+}
+
+float tmaCorrection(float omega)
+{
+	float omegaH = omega * sqrt(uDepth / uGravity);
+	if (omegaH <= 1.0)
+		return 0.5 * omegaH * omegaH;
+	if (omegaH < 2.0)
+		return 1.0 - 0.5 * (2.0 - omegaH) * (2.0 - omegaH);
+	return 1.0;
+}
+
+float jonswap(float omega, SpectrumParameters spectrum)
+{
+	float sigma = omega <= spectrum.peakOmega ? 0.07 : 0.09;
+	float r = exp(-(omega - spectrum.peakOmega) * (omega - spectrum.peakOmega) /
+		(2.0 * sigma * sigma * spectrum.peakOmega * spectrum.peakOmega));
+	float oneOverOmega = 1.0 / max(omega, 1e-4);
+	float peakOmegaOverOmega = spectrum.peakOmega * oneOverOmega;
+	return tmaCorrection(omega) * spectrum.alpha * uGravity * uGravity
+		* pow(oneOverOmega, 5.0)
+		* exp(-1.25 * pow(peakOmegaOverOmega, 4.0))
+		* pow(abs(spectrum.gamma), r);
+}
+
+float shortWavesFade(float kLength, SpectrumParameters spectrum)
+{
+	return exp(-spectrum.shortWavesFade * spectrum.shortWavesFade * kLength * kLength);
+}
+
+float layeredSpectrum(vec2 k)
+{
+	float kLength = length(k);
+	if (kLength < 1e-6)
+		return 0.0;
+
+	float omega = dispersion(kLength);
+	float theta = atan(k.y, k.x);
+	SpectrumParameters primary = uSpectrums[uBandIndex * 2];
+	SpectrumParameters secondary = uSpectrums[uBandIndex * 2 + 1];
+
+	float spectrum = primary.scale * jonswap(omega, primary) * directionSpectrum(theta, omega, primary) * shortWavesFade(kLength, primary);
+	if (secondary.scale > 0.0)
+	{
+		spectrum += secondary.scale * jonswap(omega, secondary) * directionSpectrum(theta, omega, secondary) * shortWavesFade(kLength, secondary);
+	}
+	spectrum *= exp(-kLength * 0.035);
+	return max(spectrum, 0.0);
+}
+
+void main()
+{
+	ivec2 id = ivec2(gl_GlobalInvocationID.xy);
+	if (id.x >= uResolution || id.y >= uResolution)
+	{
+		return;
+	}
+
+	float halfN = float(uResolution) * 0.5;
+	float deltaK = 2.0 * PI / uDomain;
+	vec2 k = (vec2(id) - halfN) * deltaK;
+	float spectrum = layeredSpectrum(k);
+	float kLength = length(k);
+	float dOmegaDk = dispersionDerivative(max(kLength, 1e-4));
+	vec2 gaussian = gaussianPair(uvec2(id));
+	vec2 h0 = gaussian * sqrt(max(2.0 * spectrum * abs(dOmegaDk) / max(kLength, 1e-4) * deltaK * deltaK, 0.0) * 0.5);
+	imageStore(initialSpectrum, id, vec4(h0, 0.0, 0.0));
+}

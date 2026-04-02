@@ -1,4 +1,4 @@
-package org.tides;
+package org.tides.water;
 
 import net.runelite.api.coords.WorldPoint;
 
@@ -15,6 +15,10 @@ public final class TidesWaterTile
 	private final boolean paintBacked;
 	private final boolean modelBacked;
 	private final int shorelineMask;
+	private final int bodyTileCount;
+	private final float waveAmplitudeScale;
+	private final float shoreDepthScale;
+	private final boolean deepOcean;
 
 	public TidesWaterTile(
 		WorldPoint worldPoint,
@@ -22,7 +26,11 @@ public final class TidesWaterTile
 		int surfaceHeight,
 		boolean paintBacked,
 		boolean modelBacked,
-		int shorelineMask
+		int shorelineMask,
+		int bodyTileCount,
+		float waveAmplitudeScale,
+		float shoreDepthScale,
+		boolean deepOcean
 	)
 	{
 		this.worldPoint = worldPoint;
@@ -31,6 +39,10 @@ public final class TidesWaterTile
 		this.paintBacked = paintBacked;
 		this.modelBacked = modelBacked;
 		this.shorelineMask = shorelineMask;
+		this.bodyTileCount = bodyTileCount;
+		this.waveAmplitudeScale = waveAmplitudeScale;
+		this.shoreDepthScale = shoreDepthScale;
+		this.deepOcean = deepOcean;
 	}
 
 	public WorldPoint getWorldPoint()
@@ -71,5 +83,25 @@ public final class TidesWaterTile
 	public boolean hasShore(int edgeMask)
 	{
 		return (shorelineMask & edgeMask) != 0;
+	}
+
+	public int getBodyTileCount()
+	{
+		return bodyTileCount;
+	}
+
+	public float getWaveAmplitudeScale()
+	{
+		return waveAmplitudeScale;
+	}
+
+	public float getShoreDepthScale()
+	{
+		return shoreDepthScale;
+	}
+
+	public boolean isDeepOcean()
+	{
+		return deepOcean;
 	}
 }

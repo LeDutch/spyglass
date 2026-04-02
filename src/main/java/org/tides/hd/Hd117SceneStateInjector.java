@@ -1,10 +1,13 @@
-package org.tides;
+package org.tides.hd;
 
 import java.util.Map;
 import javax.inject.Singleton;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Scene;
 import net.runelite.api.coords.WorldPoint;
+import org.tides.TidesPlugin;
+import org.tides.water.TidesSceneSnapshot;
+import org.tides.water.TidesWaterTile;
 
 @Slf4j
 @Singleton
@@ -30,12 +33,6 @@ public class Hd117SceneStateInjector
 
 	public void refresh(Hd117Handle handle, TidesPlugin plugin)
 	{
-		if (!plugin.getConfig().inject117HdWaterState())
-		{
-			status = "scene state injection disabled";
-			return;
-		}
-
 		try
 		{
 			Object context = resolveSceneContext(handle);

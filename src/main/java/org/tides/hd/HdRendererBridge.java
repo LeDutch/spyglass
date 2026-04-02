@@ -1,4 +1,4 @@
-package org.tides;
+package org.tides.hd;
 
 import java.lang.reflect.Field;
 import javax.inject.Inject;
@@ -6,8 +6,10 @@ import javax.inject.Singleton;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
 import net.runelite.api.hooks.DrawCallbacks;
+import net.runelite.client.callback.ClientThread;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginManager;
+import org.tides.TidesPlugin;
 
 @Slf4j
 @Singleton
@@ -17,9 +19,11 @@ public class HdRendererBridge
 	private static final String HD_RENDERER_PACKAGE = "rs117.hd.renderer.";
 
 	private final Client client;
+	private final ClientThread clientThread;
 	private final PluginManager pluginManager;
 	private final Hd117ShaderPatcher shaderPatcher;
 	private final Hd117SceneStateInjector sceneStateInjector;
+	private final Hd117FftWater fftWater;
 
 	private Plugin hdPlugin;
 	private Hd117Handle handle;
@@ -31,37 +35,32 @@ public class HdRendererBridge
 	@Inject
 	public HdRendererBridge(
 		Client client,
+		ClientThread clientThread,
 		PluginManager pluginManager,
 		Hd117ShaderPatcher shaderPatcher,
-		Hd117SceneStateInjector sceneStateInjector)
+		Hd117SceneStateInjector sceneStateInjector,
+		Hd117FftWater fftWater)
 	{
 		this.client = client;
+		this.clientThread = clientThread;
 		this.pluginManager = pluginManager;
 		this.shaderPatcher = shaderPatcher;
 		this.sceneStateInjector = sceneStateInjector;
+		this.fftWater = fftWater;
 	}
 
 	public void refresh(TidesPlugin plugin)
 	{
-		if (!plugin.getConfig().bridge117Hd())
-		{
-			restorePatchedState();
-			rendererName = "none";
-			status = "117 HD bridge disabled";
-			uninstallIfInstalled(client.getDrawCallbacks());
-			return;
-		}
-
 		hdPlugin = findHdPlugin();
 		DrawCallbacks current = client.getDrawCallbacks();
 
 		if (hdPlugin == null)
 		{
+			uninstallIfInstalled(current);
 			restorePatchedState();
 			handle = null;
 			rendererName = "none";
 			status = "117 HD not loaded";
-			uninstallIfInstalled(current);
 			return;
 		}
 
@@ -69,9 +68,9 @@ public class HdRendererBridge
 		rendererName = handle == null ? "renderer pending" : handle.rendererName;
 		if (handle == null)
 		{
+			uninstallIfInstalled(current);
 			restorePatchedState();
 			status = "117 HD found, renderer pending";
-			uninstallIfInstalled(current);
 			return;
 		}
 
@@ -83,9 +82,9 @@ public class HdRendererBridge
 
 		if (!isHdRenderer(current))
 		{
+			uninstallIfInstalled(current);
 			restorePatchedState();
 			status = "117 HD found, renderer unavailable";
-			uninstallIfInstalled(current);
 			return;
 		}
 
@@ -98,8 +97,19 @@ public class HdRendererBridge
 
 	public void shutDown()
 	{
-		restorePatchedState();
-		uninstallIfInstalled(client.getDrawCallbacks());
+		Hd117Handle handleToRestore = handle != null ? handle : hdPlugin == null ? null : reflectHandle(hdPlugin);
+		DrawCallbacks delegateToRestore = delegate;
+		HdRendererProxy proxyToRemove = proxy;
+		String rendererNameToRestore = rendererName;
+
+		clientThread.invoke(() ->
+		{
+			uninstallProxy(proxyToRemove, delegateToRestore, rendererNameToRestore);
+			restorePatchedState(handleToRestore);
+		});
+
+		proxy = null;
+		delegate = null;
 		hdPlugin = null;
 		handle = null;
 		rendererName = "none";
@@ -131,6 +141,11 @@ public class HdRendererBridge
 		return sceneStateInjector.getStatus();
 	}
 
+	public String getFftStatus()
+	{
+		return fftWater.getStatus();
+	}
+
 	void noteSceneCallback(String callback)
 	{
 		status = "Hooked " + rendererName + " via " + callback;
@@ -158,6 +173,15 @@ public class HdRendererBridge
 		delegate = null;
 	}
 
+	private void uninstallProxy(HdRendererProxy proxyToRemove, DrawCallbacks delegateToRestore, String rendererNameToRestore)
+	{
+		if (proxyToRemove != null && client.getDrawCallbacks() == proxyToRemove)
+		{
+			client.setDrawCallbacks(delegateToRestore);
+			log.info("Removed tides bridge from {}", rendererNameToRestore);
+		}
+	}
+
 	private void refreshPatchedState(TidesPlugin plugin, String source)
 	{
 		if (handle == null)
@@ -167,6 +191,7 @@ public class HdRendererBridge
 		}
 
 		shaderPatcher.refresh(handle, plugin.getConfig());
+		fftWater.refresh(handle, plugin);
 		sceneStateInjector.refresh(handle, plugin);
 		status = "Hooked " + rendererName
 			+ " via " + source
@@ -176,9 +201,15 @@ public class HdRendererBridge
 
 	private void restorePatchedState()
 	{
-		if (handle != null)
+		restorePatchedState(handle);
+	}
+
+	private void restorePatchedState(Hd117Handle handleToRestore)
+	{
+		fftWater.reset();
+		if (handleToRestore != null)
 		{
-			shaderPatcher.restore(handle);
+			shaderPatcher.restore(handleToRestore);
 		}
 		sceneStateInjector.reset();
 	}

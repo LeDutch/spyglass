@@ -1,0 +1,89 @@
+#version 430
+
+#define MAX_FFT_SIZE 256
+#define MAX_FFT_LOG2 8
+#define PI 3.14159265358979323846
+
+layout(local_size_x = MAX_FFT_SIZE, local_size_y = 1) in;
+
+layout(rg32f, binding = 0) readonly uniform image2D sourceSpectrum;
+layout(rg32f, binding = 1) writeonly uniform image2D targetSpectrum;
+
+uniform int uResolution;
+uniform int uLog2Resolution;
+uniform bool uHorizontal;
+
+shared vec2 fftGroupBufferA[MAX_FFT_SIZE];
+shared vec2 fftGroupBufferB[MAX_FFT_SIZE];
+
+vec2 complexMul(vec2 a, vec2 b)
+{
+	return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+void butterflyValues(uint step, uint index, out uvec2 indices, out vec2 twiddle)
+{
+	uint N = uint(uResolution);
+	uint block = N >> (step + 1u);
+	uint wing = block * (index / block);
+	uint i = (wing + index) % N;
+	float angle = 2.0 * PI * float(wing) / float(N);
+	twiddle = vec2(cos(angle), -sin(angle));
+	indices = uvec2(i, i + block);
+}
+
+void main()
+{
+	uint index = gl_LocalInvocationID.x;
+	uint row = gl_WorkGroupID.x;
+
+	ivec2 coord = uHorizontal
+		? ivec2(int(index), int(row))
+		: ivec2(int(row), int(index));
+
+	if (index < uint(uResolution))
+	{
+		fftGroupBufferA[index] = imageLoad(sourceSpectrum, coord).rg;
+	}
+	else
+	{
+		fftGroupBufferA[index] = vec2(0.0);
+	}
+	barrier();
+
+	bool ping = false;
+	for (int step = 0; step < MAX_FFT_LOG2; ++step)
+	{
+		if (step < uLog2Resolution && index < uint(uResolution))
+		{
+			uvec2 indices;
+			vec2 twiddle;
+			butterflyValues(uint(step), index, indices, twiddle);
+			vec2 a = ping ? fftGroupBufferB[indices.x] : fftGroupBufferA[indices.x];
+			vec2 b = ping ? fftGroupBufferB[indices.y] : fftGroupBufferA[indices.y];
+			vec2 value = a + complexMul(twiddle, b);
+			if (ping)
+			{
+				fftGroupBufferA[index] = value;
+			}
+			else
+			{
+				fftGroupBufferB[index] = value;
+			}
+		}
+		barrier();
+		if (step < uLog2Resolution)
+		{
+			ping = !ping;
+		}
+		barrier();
+	}
+
+	if (index >= uint(uResolution))
+	{
+		return;
+	}
+
+	vec2 outputValue = ping ? fftGroupBufferB[index] : fftGroupBufferA[index];
+	imageStore(targetSpectrum, coord, vec4(outputValue, 0.0, 0.0));
+}
